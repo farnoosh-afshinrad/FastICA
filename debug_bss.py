@@ -4,7 +4,7 @@ from scipy.io import wavfile
 import soundfile as sf
 import matplotlib.pyplot as plt
 from combine_voices import CombineVoices
-from fast_ica import fast_ica
+from fast_ica import fast_ica_newton
 from bss_metrics import BSSMetrics
 
 def analyze_sources_and_mixing():
@@ -125,7 +125,7 @@ def test_fastiva_with_simple_mixing():
     print(f"Whitening check: {np.diag((Z @ Z.T) / (Z.shape[1] - 1))}")
     
     # Apply FastICA
-    W, S = fast_ica(Z, n_components=2, fun='tanh', tol=1e-6, max_iter=2000)
+    W, S = fast_ica_newton(Z, n_components=2, fun='tanh', tol=1e-6, max_iter=2000)
     
     print(f"Separated sources shape: {S.shape}")
     
