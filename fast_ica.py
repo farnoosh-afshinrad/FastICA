@@ -1,94 +1,6 @@
 import numpy as np
 
 
-# # --- non-linearities per Table I (negentropy approximations) ---
-# def _g_pow3(x):         return x ** 3
-
-
-# def _g_pow3_der(x):     return 3 * x ** 2
-
-
-# def _g_tanh(x, a=1.0):   return np.tanh(a * x)
-
-
-# def _g_tanh_der(x, a=1.0):
-#     t = np.tanh(a * x)
-#     return a * (1 - t ** 2)
-
-
-# def _g_gauss(x):        return x * np.exp(-x ** 2 / 2)
-
-
-# def _g_gauss_der(x):    return (1 - x ** 2) * np.exp(-x ** 2 / 2)
-
-
-
-
-# def fast_ica(Z, n_components, fun='pow3', tol=1e-6, max_iter=2000):
-#     """
-#     Negentropy-based FastICA with restart-on-collapse.
-#     Z: whitened data, shape (n_features, n_samples)
-#     n_components: how many ICs to extract
-#     fun: 'pow3' | 'tanh' | 'gauss'
-#     """
-#     n_features, n_samples = Z.shape
-
-#     # bind g and its derivative
-#     if fun == 'pow3':
-#         g, g_der = _g_pow3, _g_pow3_der
-#     elif fun == 'tanh':
-#         g   = lambda x: _g_tanh(x, a=1.0)
-#         g_der = lambda x: _g_tanh_der(x, a=1.0)
-#     elif fun == 'gauss':
-#         g, g_der = _g_gauss, _g_gauss_der
-#     else:
-#         raise ValueError(f"Unknown fun '{fun}'")
-
-#     W = np.zeros((n_components, n_features), dtype=float)
-
-#     for i in range(n_components):
-#         # random unit start
-#         w = np.random.randn(n_features)
-#         w /= np.linalg.norm(w)
-
-#         for _ in range(max_iter):
-#             w_old = w.copy()
-
-#             # 1) projection
-#             proj = w @ Z                     # shape (n_samples,)
-#             # 2) non-linearity
-#             g_proj     = g(proj)
-#             g_der_proj = g_der(proj)
-#             # 3) fixed-point update
-#             w = (Z @ g_proj) / n_samples - np.mean(g_der_proj) * w_old
-
-#             # 4) deflation / orthogonalize
-#             if i > 0:
-#                 # subtract projection onto previously found W[:i]
-#                 coeffs = W[:i] @ w          # shape (i,)
-#                 w -= W[:i].T @ coeffs       # shape (n_features,)
-
-#             # 5) guard against collapse
-#             norm_w = np.linalg.norm(w)
-#             if norm_w < 1e-12:
-#                 # restart this component
-#                 w = np.random.randn(n_features)
-#                 w /= np.linalg.norm(w)
-#                 continue
-
-#             # 6) normalize
-#             w /= norm_w
-
-#             # 7) check convergence
-#             if abs(abs(w @ w_old) - 1) < tol:
-#                 break
-
-#         W[i, :] = w
-
-#     # recover sources
-#     S = W @ Z
-#     return W, S
-
 class NonLinearities:
     """Implementation of all non-linearity functions from Table I"""
     
@@ -142,6 +54,8 @@ def compute_negentropy(y, fun='exp'):
     """
     Compute negentropy approximation J(y) ∝ {E[F(y)] - E[F(v)]}²
     where v is Gaussian variable with same variance as y
+    
+    Now includes proper proportionality constant for better approximation
     """
     # Generate Gaussian variable v with same variance
     v = np.random.randn(len(y))
@@ -150,15 +64,21 @@ def compute_negentropy(y, fun='exp'):
     # Select non-linearity
     if fun == 'logcosh':
         F = NonLinearities.logcosh
+        # Proportionality constant for logcosh (empirically determined)
+        k = 0.375
     elif fun == 'exp':
         F = NonLinearities.exp
+        # Proportionality constant for exp
+        k = 0.25
     elif fun == 'pow4':
         F = NonLinearities.pow4
+        # Proportionality constant for pow4
+        k = 1/12
     else:
         raise ValueError(f"Unknown function: {fun}")
     
-    # Compute negentropy approximation
-    negentropy = (np.mean(F(y)) - np.mean(F(v)))**2
+    # Compute negentropy approximation with proper constant
+    negentropy = k * (np.mean(F(y)) - np.mean(F(v)))**2
     return negentropy
 
 
@@ -181,9 +101,37 @@ def gram_schmidt_orthogonalize(W, w, i):
     return w_orth
 
 
-def fast_ica_newton(Z, n_components, fun='exp', tol=1e-6, max_iter=200):
+def symmetric_orthogonalization(W):
+    """
+    Symmetric orthogonalization as alternative to deflation
+    W = W * (W^T * W)^(-1/2)
+    """
+    # Compute W^T * W
+    WTW = W @ W.T
+    
+    # Eigendecomposition
+    eigenvalues, eigenvectors = np.linalg.eigh(WTW)
+    
+    # Compute (W^T * W)^(-1/2)
+    D_inv_sqrt = np.diag(1.0 / np.sqrt(eigenvalues + 1e-10))
+    WTW_inv_sqrt = eigenvectors @ D_inv_sqrt @ eigenvectors.T
+    
+    # Apply symmetric orthogonalization
+    W_orth = WTW_inv_sqrt @ W
+    
+    return W_orth
+
+
+def fast_ica_newton(Z, n_components, fun='exp', tol=1e-6, max_iter=200, 
+                    orthogonalization='deflation'):
     """
     FastICA with Newton iteration refinement as mentioned in paper
+    
+    Parameters:
+    -----------
+    orthogonalization: str, 'deflation' or 'symmetric'
+        Method for orthogonalization. 'deflation' extracts components one by one,
+        'symmetric' extracts all components simultaneously.
     """
     n_features, n_samples = Z.shape
     
@@ -202,53 +150,99 @@ def fast_ica_newton(Z, n_components, fun='exp', tol=1e-6, max_iter=200):
     
     W = np.zeros((n_components, n_features))
     
-    for i in range(n_components):
-        print(f"\nExtracting component {i+1}/{n_components}")
+    if orthogonalization == 'symmetric':
+        # Initialize all components at once for symmetric orthogonalization
+        for i in range(n_components):
+            w = np.random.randn(n_features)
+            W[i] = w / np.linalg.norm(w)
         
-        # Random initialization with ||u(0)||₂ = 1
-        w = np.random.randn(n_features)
-        w = w / np.linalg.norm(w)
-        
-        converged = False
+        print(f"\nExtracting {n_components} components using symmetric orthogonalization")
         
         for iteration in range(max_iter):
-            w_old = w.copy()
+            W_old = W.copy()
             
-            # Compute projections
-            y = np.dot(w, Z)  # shape: (n_samples,)
-            
-            # Newton iteration update (from paper equations 14-17)
-            # u_i(k+1) = E[Zf(y_i)] - u_i(k)E[f'(y_i)]
-            E_Zf = np.mean(Z * f(y), axis=1)
-            E_fprime = np.mean(f_prime(y))
-            
-            # Newton update
-            w = E_Zf - E_fprime * w_old
-            
-            # Gram-Schmidt orthogonalization against previous components
-            if i > 0:
-                w = gram_schmidt_orthogonalize(W, w, i)
-            else:
-                # Just normalize for first component
-                w = w / (np.linalg.norm(w) + 1e-10)
-            
-            # Check convergence
-            convergence = 1 - abs(np.dot(w, w_old))
-            
-            if convergence < tol:
-                converged = True
-                print(f"  Converged at iteration {iteration+1}")
+            # Update all components
+            for i in range(n_components):
+                # Compute projections
+                y = np.dot(W[i], Z)
                 
-                # Compute and display negentropy for this component
-                y_final = np.dot(w, Z)
-                neg = compute_negentropy(y_final, fun)
-                print(f"  Negentropy J(y_{i+1}) = {neg:.6f}")
+                # Newton iteration update
+                E_Zf = np.mean(Z * f(y), axis=1)
+                E_fprime = np.mean(f_prime(y))
+                
+                W[i] = E_Zf - E_fprime * W[i]
+            
+            # Apply symmetric orthogonalization
+            W = symmetric_orthogonalization(W)
+            
+            # Check convergence for all components
+            converged = True
+            for i in range(n_components):
+                # Fixed convergence check as per paper: |⟨w, w_old⟩ - 1| < tolerance
+                convergence = abs(abs(np.dot(W[i], W_old[i])) - 1)
+                if convergence >= tol:
+                    converged = False
+                    break
+            
+            if converged:
+                print(f"  All components converged at iteration {iteration+1}")
                 break
-        
-        if not converged:
-            print(f"  Warning: Component {i+1} did not converge")
-        
-        W[i] = w
+    
+    else:  # deflation
+        for i in range(n_components):
+            print(f"\nExtracting component {i+1}/{n_components}")
+            
+            # Random initialization with ||w(0)||₂ = 1
+            w = np.random.randn(n_features)
+            w = w / np.linalg.norm(w)
+            
+            converged = False
+            
+            for iteration in range(max_iter):
+                w_old = w.copy()
+                
+                # Compute projections
+                y = np.dot(w, Z)  # shape: (n_samples,)
+                
+                # Newton iteration update (from paper equations 14-17)
+                E_Zf = np.mean(Z * f(y), axis=1)
+                E_fprime = np.mean(f_prime(y))
+                
+                # Newton update
+                w = E_Zf - E_fprime * w_old
+                
+                # Gram-Schmidt orthogonalization against previous components
+                if i > 0:
+                    w = gram_schmidt_orthogonalize(W, w, i)
+                else:
+                    # Just normalize for first component
+                    w = w / (np.linalg.norm(w) + 1e-10)
+                
+                # Check for collapse and restart if needed
+                norm_w = np.linalg.norm(w)
+                if norm_w < 1e-12:
+                    print(f"  Component collapsed at iteration {iteration+1}, restarting...")
+                    w = np.random.randn(n_features)
+                    w = w / np.linalg.norm(w)
+                    continue
+                
+                # Fixed convergence check as per paper: |⟨w, w_old⟩ - 1| < tolerance
+                convergence = abs(abs(np.dot(w, w_old)) - 1)
+                
+                if convergence < tol:
+                    converged = True
+                    print(f"  Converged at iteration {iteration+1}")
+                    
+                    # Compute and display negentropy for this component
+                    y_final = np.dot(w, Z)
+                    neg = compute_negentropy(y_final, fun)
+                    print(f"  Negentropy J(y_{i+1}) = {neg:.6f}")
+                    break
+            
+            if not converged:
+                print(f"  Warning: Component {i+1} did not converge")
+            
+            W[i] = w
     
     # Extract sources
     S = W @ Z
