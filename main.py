@@ -51,6 +51,56 @@ def preprocess_mixed(X, sr):
     
     return Z, V, mean_vec
 
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def plot_sources_and_groundtruth(S_true, S_est, source_names=None, fs=1.0):
+    """
+    Plot each true source next to its estimated counterpart.
+
+    Parameters
+    ----------
+    S_true : np.ndarray, shape (n_sources, n_samples)
+        The ground-truth sources.
+    S_est : np.ndarray, shape (n_sources, n_samples)
+        The estimated sources (already permuted/scaled to match S_true).
+    source_names : list of str, optional
+        Names for each source (length n_sources). Defaults to ['1','2',…].
+    fs : float, optional
+        Sampling frequency for the time axis (defaults to 1.0, i.e. samples).
+    """
+    n_sources, n_samples = S_true.shape
+    t = np.arange(n_samples) / fs
+
+    # default names if none given
+    if source_names is None:
+        source_names = [str(i + 1) for i in range(n_sources)]
+
+    fig, axes = plt.subplots(n_sources, 2, figsize=(10, 2.5 * n_sources), sharex=True)
+
+    # if there's only one source, axes will be 1D
+    if n_sources == 1:
+        axes = axes[np.newaxis, :]
+
+    for i in range(n_sources):
+        ax_true, ax_est = axes[i]
+
+        ax_true.plot(t, S_true[i])
+        ax_true.set_title(f"True Source {i + 1}: {source_names[i]}")
+        ax_true.set_ylabel("Amplitude")
+
+        ax_est.plot(t, S_est[i])
+        ax_est.set_title(f"Estimated Source {i + 1}: {source_names[i]}")
+        ax_est.set_ylabel("Amplitude")
+
+    axes[-1, 0].set_xlabel("Time [s]")
+    axes[-1, 1].set_xlabel("Time [s]")
+    plt.tight_layout()
+    plt.show()
+
+
 def main():
     print("FastICA with Improved Mixing Approaches")
     print("="*60)
@@ -94,13 +144,14 @@ def main():
         # Apply FastICA
         print("\nApplying FastICA...")
         W, S = fast_ica_newton(Z, n_components=2, fun='logcosh', 
-                              max_iter=200, orthogonalization='deflation')
-        
+                              max_iter=200,apply_weight_init=True)
         # Evaluate
         original_sources = np.array([mixer.s1, mixer.s2])
         min_len = min(original_sources.shape[1], S.shape[1])
         
         evaluator = BSSMetrics()
+        plot_sources_and_groundtruth(original_sources[:, :min_len],
+            S[:, :min_len],source_names=['Music', 'Talk'], fs=mixer.sr)
         results = evaluator.evaluate_separation(
             original_sources[:, :min_len], 
             S[:, :min_len]
